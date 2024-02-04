@@ -102,6 +102,12 @@ def get_signed_short_msb(bits):
 
 class BME280:
     def __init__(self, config):
+        self.gas_cal_data = []
+        self.gas_ceil = 0
+        self.slope = 0.03
+        self.gas_recal_step = 0
+        self.gas_recal_period = 3600
+        self.burn_in_cycles = 300
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.reactor = self.printer.get_reactor()
@@ -373,6 +379,11 @@ class BME280:
             gas_range = (gas_data[1] & 0x0F)
             self.gas = self._compensate_gas(gas_raw, gas_range)
 
+        # gas to VOC
+        self.gas = self._gas_to_aq(self.temp, self.pressure, self.humidity, self.gas)
+        if self.gas is None:
+            self.gas = 0
+
         if self.temp < self.min_temp or self.temp > self.max_temp:
             self.printer.invoke_shutdown(
                 "BME680 temperature %0.1f outside range of %0.1f:%.01f"
@@ -499,6 +510,54 @@ class BME280:
         gas = var1 * BME680_GAS_CONSTANTS[gas_range][1] / (
                 gas_raw - 512. + var1)
         return gas
+
+    def waterSatDensity(self, temp):
+        import numpy as np
+        rho_max = (6.112* 100 * np.exp((17.62 * temp)/(243.12 + temp)))/(461.52 * (temp + 273.15))
+        return rho_max
+
+    def _gas_to_aq(self, temp, press, hum, R_gas):
+        import numpy as np
+        #calculate stauration density and absolute humidity
+        rho_max = self.waterSatDensity(temp)
+        hum_abs = hum * 10 * rho_max
+
+        #compensate exponential impact of humidity on resistance
+        comp_gas = R_gas * np.exp(self.slope * hum_abs)
+
+        if self.burn_in_cycles > 0:
+            #check if burn-in-cycles are recorded
+            self.burn_in_cycles -= 1        #count down cycles
+            if comp_gas > self.gas_ceil:    #if value exceeds current ceiling, add to calibration list and update ceiling
+                self.gas_cal_data = [comp_gas]
+                self.gas_ceil = comp_gas
+            return None            #return None type as sensor burn-in is not yet completed
+        else:
+            #adapt calibration
+            if comp_gas > self.gas_ceil:
+                self.gas_cal_data.append(comp_gas)
+                if len(self.gas_cal_data) > 100:
+                    del self.gas_cal_data[0]
+                self.gas_ceil = np.mean(self.gas_cal_data)
+
+
+            #calculate and print relative air quality on a scale of 0-100%
+            #use quadratic ratio for steeper scaling at high air quality
+            #clip air quality at 100%
+            AQ = np.minimum((comp_gas / self.gas_ceil)**2, 1) * 100
+
+
+
+            #for compensating negative drift (dropping resistance) of the gas sensor:
+            #delete oldest value from calibration list and add current value
+            self.gas_recal_step += 1
+            if self.gas_recal_step >= self.gas_recal_period:
+                self.gas_recal_step = 0
+                self.gas_cal_data.append(comp_gas)
+                del self.gas_cal_data[0]
+                self.gas_ceil = np.mean(self.gas_cal_data)
+
+        return AQ
 
     def _calculate_gas_heater_resistance(self, target_temp):
         amb_temp = self.temp
