@@ -585,9 +585,38 @@ class BME280:
         if self.chip_type in ('BME280', 'BME680'):
             data['humidity'] = self.humidity
         if self.chip_type == 'BME680':
-            data['gas'] = self.gas
+            humidity_score = self.GetHumidityScore()
+            gas_score = self.GetGasScore()
+            score = humidity_score * 1.0 + gas_score * 1.0
+            score = (100 - score) * 5
+            data['gas'] = score
         return data
 
+    def GetHumidityScore(self):
+        hum_reference = 40
+        humidity_score = 0
+        current_humidity = self.humidity
+        # Humidity +/-5% around optimum
+        if current_humidity >= 38 and current_humidity <= 42:
+            humidity_score = 0.25 * 100
+        else:
+            if current_humidity < 38:
+                humidity_score = 0.25 / hum_reference * current_humidity * 100
+            else:
+                humidity_score = ((-0.25 / (100 - hum_reference) * current_humidity) + 0.416666) * 100
+        return humidity_score
+
+    def GetGasScore(self):
+        gas_reference = self.gas
+        gas_lower_limit = 10000  # Bad air quality limit
+        gas_upper_limit = 300000 # Good air quality limit
+        # Calculate gas contribution to IAQ index
+        gas_score = (0.75 / (gas_upper_limit - gas_lower_limit) * gas_reference - (gas_lower_limit * (0.75 / (gas_upper_limit - gas_lower_limit)))) * 100.00
+        if gas_score > 75:
+            gas_score = 75  # Sometimes gas readings can go outside of expected scale maximum
+        if gas_score < 0:
+            gas_score = 0  # Sometimes gas readings can go outside of expected scale minimum
+        return gas_score
 
 def load_config(config):
     # Register sensor
