@@ -39,6 +39,8 @@ class PrinterSensorCombined:
     def _handle_connect(self):
         for sensor_name in self.sensor_names:
             sensor = self.printer.lookup_object(sensor_name)
+            if (hasattr(sensor, 'start_checks')):
+                sensor.start_checks()
             # check if sensor has get_status function and
             # get_status has a 'temperature' value
             if (hasattr(sensor, 'get_status') and
@@ -70,6 +72,8 @@ class PrinterSensorCombined:
         for sensor in self.sensors:
             sensor_status = sensor.get_status(eventtime)
             sensor_temperature = sensor_status['temperature']
+            if sensor_temperature is None:
+                  continue
             values.append(sensor_temperature)
 
         # check if values are out of max_deviation range
